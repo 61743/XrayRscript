@@ -16,15 +16,6 @@ old_config_status="off"
 THREAD=$(grep 'processor' /proc/cpuinfo | sort -u | wc -l)
 source '/etc/os-release'
 VERSION=$(echo "${VERSION}" | awk -F "[()]" '{print $2}')
-random_num=$((RANDOM%12+4))
-camouflage="/$(head -n 10 /dev/urandom | md5sum | head -c ${random_num})/"
-domain=""
-host=""
-key=""
-id=""
-panel=""
-outsideport=""
-
 
 is_root() {
     if [ 0 == $UID ]; then
@@ -35,11 +26,22 @@ is_root() {
         exit 1
     fi
 }
+basic_information(){
+read -rp "你的面板类型(SSpanel或者V2board): " planetype
+read -rp "你的对接域名(以https://或者htt/://开头): " apidomin
+read -rp "你的对接密钥: " apikey
+read -rp "你的节点域名(例如 sg1.114514.com): " nodedomain
+read -rp "你的节点ID: " nodeid
+read -rp "当前节点的path(例如 /aaaa/ ): " path
+read -rp "用户连接端口(例如443): " outsideport
+read -rp "服务段监听端口(例如10086): " insideport
+}
+
 check_system() {
     if [[ "${ID}" == "centos" && ${VERSION_ID} -ge 7 ]]; then
         echo -e "当前系统为 Centos ${VERSION_ID} ${VERSION}"
         INS="yum"
-	systemctl stop firewalld
+	    systemctl stop firewalld
         systemctl disable firewalld
     elif [[ "${ID}" == "debian" && ${VERSION_ID} -ge 8 ]]; then
         echo -e "当前系统为 Debian ${VERSION_ID} ${VERSION}"
@@ -48,7 +50,7 @@ check_system() {
 	    $INS install vim cpufrequtils net-tools -y
 	    sed -i 's/ondemand/performance/g' /etc/init.d/cpufrequtils
 	    systemctl daemon-reload
-	systemctl stop ufw
+	    systemctl stop ufw
         systemctl disable ufw
     elif [[ "${ID}" == "ubuntu" && $(echo "${VERSION_ID}" | cut -d '.' -f1) -ge 16 ]]; then
         echo -e "当前系统为 Ubuntu ${VERSION_ID} ${UBUNTU_CODENAME}"
@@ -58,14 +60,15 @@ check_system() {
         rm /var/lib/apt/lists/lock
         rm /var/cache/apt/archives/lock
         $INS update
-	systemctl stop ufw
+	    systemctl stop ufw
         systemctl disable ufw
     else
         echo -e "当前系统为 ${ID} ${VERSION_ID} 不在支持的系统列表内，安装中断"
         exit 1
     fi
-    $INS install dbus -y
+        $INS install dbus -y
 }
+
 chrony_install() {
     ${INS} -y install chrony
     timedatectl set-ntp true
@@ -124,26 +127,39 @@ basic_optimization() {
         setenforce 0
     fi
 }
-modify_nginx_port() {
-    sed -i "/ssl http2;$/c \\\tlisten ${port} ssl http2;" ${nginx_conf}
-    sed -i "3c \\\tlisten [::]:${port} ssl http2;" ${nginx_conf}
-    echo -e "端口号:${port}"
+
+port_exist_check() {
+    if [[ 0 -eq $(lsof -i:"80" | grep -i -c "listen") ]]; then
+        echo -e " 80 端口未被占用 "
+        sleep 1
+    else
+        echo -e "检测到 80 端口被占用，以下为 80 端口占用信息 "
+        lsof -i:"80"
+        echo -e " 5s 后将尝试自动 kill 占用进程 "
+        sleep 5
+        lsof -i:"80" | awk '{print $2}' | grep -v "PID" | xargs kill -9
+        echo -e "kill 完成 "
+        sleep 1
+    fi
+	
+	if [[ 0 -eq $(lsof -i:"${outsideport}" | grep -i -c "listen") ]]; then
+        echo -e " ${outsideport} 端口未被占用 "
+        sleep 1
+    else
+        echo -e "检测到 ${outsideport} 端口被占用，以下为 ${outsideport} 端口占用信息 "
+        lsof -i:"${outsideport}"
+        echo -e " 5s 后将尝试自动 kill 占用进程 "
+        sleep 5
+        lsof -i:"${outsideport}" | awk '{print $2}' | grep -v "PID" | xargs kill -9
+        echo -e "kill 完成 "
+        sleep 1
+    fi
 }
-modify_nginx_other() {
-    sed -i "/server_name/c \\\tserver_name ${domain};" ${nginx_conf}
-    sed -i "/return/c \\\treturn 301 https://${domain}\$request_uri;" ${nginx_conf}
-}
-web_camouflage() {
-    ##请注意 这里和LNMP脚本的默认路径冲突，千万不要在安装了LNMP的环境下使用本脚本，否则后果自负
-    rm -rf /home/wwwroot
-    mkdir -p /home/wwwroot
-    cd /home/wwwroot || exit
-    git clone https://github.com/wulabing/3DCEList.git
-}
+
 nginx_exist_check() {
     if [[ -f "/etc/nginx/sbin/nginx" ]]; then
         echo -e "Nginx已存在，跳过编译安装过程"
-        sleep 1
+        sleep 2
     elif [[ -d "/usr/local/nginx/" ]]; then
         echo -e "检测到其他套件安装的Nginx，继续安装会造成冲突，请处理后安装"
         exit 1
@@ -151,6 +167,7 @@ nginx_exist_check() {
         nginx_install
     fi
 }
+
 nginx_install() {
     wget -nc --no-check-certificate http://nginx.org/download/nginx-${nginx_version}.tar.gz -P ${nginx_openssl_src}
     wget -nc --no-check-certificate https://www.openssl.org/source/openssl-${openssl_version}.tar.gz -P ${nginx_openssl_src}
@@ -193,7 +210,7 @@ nginx_install() {
     sed -i 's/#user  nobody;/user  root;/' ${nginx_dir}/conf/nginx.conf
     sed -i 's/worker_processes  1;/worker_processes  4;/' ${nginx_dir}/conf/nginx.conf
     sed -i 's/    worker_connections  1024;/    worker_connections  4096;/' ${nginx_dir}/conf/nginx.conf
-    sed -i 's/        listen       80;/        listen       4480;/' ${nginx_dir}/conf/nginx.conf
+#    sed -i 's/        listen       80;/        listen       4480;/' ${nginx_dir}/conf/nginx.conf
     sed -i '$i include conf.d/*.conf;' ${nginx_dir}/conf/nginx.conf
     sed -i "8ierror_log /dev/null;" ${nginx_dir}/conf/nginx.conf
     sed -i "27i\    access_log off;" ${nginx_dir}/conf/nginx.conf
@@ -203,39 +220,7 @@ nginx_install() {
     rm -rf ../openssl-"${openssl_version}".tar.gz
     mkdir ${nginx_dir}/conf/conf.d
 }
-ssl_install() {
-    if [[ "${ID}" == "centos" ]]; then
-        ${INS} install socat nc -y
-    else
-        ${INS} install socat netcat -y
-    fi
-    curl https://get.acme.sh | sh
-}
-acme() {
-    "$HOME"/.acme.sh/acme.sh --set-default-ca --server letsencrypt
-    if "$HOME"/.acme.sh/acme.sh --issue -d "${domain}" --standalone -k ec-256 --force --test; then
-        echo -e "SSL 证书测试签发成功，开始正式签发"
-        rm -rf "$HOME/.acme.sh/${domain}_ecc"
-        sleep 1
-    else
-        echo -e "SSL 证书测试签发失败"
-        rm -rf "$HOME/.acme.sh/${domain}_ecc"
-        exit 1
-    fi
-    if "$HOME"/.acme.sh/acme.sh --issue -d "${domain}" --standalone -k ec-256 --force; then
-        echo -e "SSL 证书生成成功"
-        sleep 1
-        mkdir /data
-        if "$HOME"/.acme.sh/acme.sh --installcert -d "${domain}" --fullchainpath /data/zhengshu.crt --keypath /data/zhengshu.key --ecc --force; then
-            echo -e "证书配置成功"
-            sleep 1
-        fi
-    else
-        echo -e "SSL 证书生成失败"
-        rm -rf "$HOME/.acme.sh/${domain}_ecc"
-        exit 1
-    fi
-}
+
 nginx_conf_add() {
     touch ${nginx_conf_dir}/zhengshu.conf
     cat >${nginx_conf_dir}/zhengshu.conf <<EOF
@@ -246,7 +231,7 @@ nginx_conf_add() {
         ssl_certificate_key   /data/zhengshu.key;
         ssl_protocols         TLSv1.3;
         ssl_ciphers           TLS13-AES-256-GCM-SHA384:TLS13-CHACHA20-POLY1305-SHA256:TLS13-AES-128-GCM-SHA256:TLS13-AES-128-CCM-8-SHA256:TLS13-AES-128-CCM-SHA256:EECDH+CHACHA20:EECDH+CHACHA20-draft:EECDH+ECDSA+AES128:EECDH+aRSA+AES128:RSA+AES128:EECDH+ECDSA+AES256:EECDH+aRSA+AES256:RSA+AES256:EECDH+ECDSA+3DES:EECDH+aRSA+3DES:RSA+3DES:!MD5;
-        server_name           serveraddr.com;
+        server_name           ${nodedomain};
         index index.html index.htm;
         root  /home/wwwroot/3DCEList;
         error_page 400 = /400.html;
@@ -255,11 +240,11 @@ nginx_conf_add() {
         ssl_stapling on;
         ssl_stapling_verify on;
         add_header Strict-Transport-Security "max-age=31536000";
-        location ${camouflage}
+        location ${path}
         {
         proxy_redirect off;
         proxy_read_timeout 1200s;
-        proxy_pass http://127.0.0.1:10000;
+        proxy_pass http://127.0.0.1:${insideport};
         proxy_http_version 1.1;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -272,21 +257,59 @@ nginx_conf_add() {
     server {
         listen 80;
         listen [::]:80;
-        server_name serveraddr.com;
-        return 301 https://use.shadowsocksr.win\$request_uri;
+        server_name ${nodedomain};
+        return 301 https://${nodedomain}\$request_uri;
     }
+	
 EOF
 
-    
-    modify_nginx_other
 }
-start_process_systemd() {
-    systemctl daemon-reload
-    systemctl restart nginx
+
+web_camouflage() {
+    ##请注意 这里和LNMP脚本的默认路径冲突，千万不要在安装了LNMP的环境下使用本脚本，否则后果自负
+    rm -rf /home/wwwroot
+    mkdir -p /home/wwwroot
+    cd /home/wwwroot || exit
+    git clone https://github.com/wulabing/3DCEList.git
+    echo -e "web 站点伪装"
 }
-enable_process_systemd() {
-    systemctl enable nginx
+
+ssl_install() {
+    if [[ "${ID}" == "centos" ]]; then
+        ${INS} install socat nc -y
+    else
+        ${INS} install socat netcat -y
+    fi
+    curl https://get.acme.sh | sh
 }
+
+acme() {
+    "$HOME"/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+    if "$HOME"/.acme.sh/acme.sh --issue -d "${nodedomain}" --standalone -k ec-256 --force --test; then
+        echo -e "SSL 证书测试签发成功，开始正式签发"
+        rm -rf "$HOME/.acme.sh/${nodedomain}_ecc"
+        sleep 1
+    else
+        echo -e "SSL 证书测试签发失败"
+        rm -rf "$HOME/.acme.sh/${nodedomain}_ecc"
+        exit 1
+    fi
+    if "$HOME"/.acme.sh/acme.sh --issue -d "${nodedomain}" --standalone -k ec-256 --force; then
+        echo -e "SSL 证书生成成功"
+        sleep 1
+        mkdir /data
+        if "$HOME"/.acme.sh/acme.sh --installcert -d "${nodedomain}" --fullchainpath /data/zhengshu.crt --keypath /data/zhengshu.key --ecc --force; then
+            echo -e "证书配置成功"
+            sleep 1
+        fi
+    else
+        echo -e "SSL 证书生成失败"
+        rm -rf "$HOME/.acme.sh/${nodedomain}_ecc"
+        exit 1
+    fi
+}
+
+#自动更新证书脚本和定时任务
 acme_cron_update() {
     cat >${ssl_update_file} <<EOF
 #!/usr/bin/env bash
@@ -297,14 +320,14 @@ sslupdate(){
 systemctl stop nginx &> /dev/null
 sleep 1
 "/root/.acme.sh"/acme.sh --cron --home "/root/.acme.sh" &> /dev/null
-"/root/.acme.sh"/acme.sh --installcert -d ${domain} --fullchainpath /data/zhengshu.crt --keypath /data/zhengshu.key --ecc
+"/root/.acme.sh"/acme.sh --installcert -d ${nodedomain} --fullchainpath /data/zhengshu.crt --keypath /data/zhengshu.key --ecc
 sleep 1
 systemctl start nginx &> /dev/null
 }
-
 sslupdate
 
 EOF
+#定时任务
 chmod +x ${ssl_update_file}
 
     if [[ $(crontab -l | grep -c "ssl_update.sh") -lt 1 ]]; then
@@ -315,6 +338,7 @@ chmod +x ${ssl_update_file}
       fi
     fi
 }
+
 nginx_systemd() {
     cat >$nginx_systemd_file <<EOF
 [Unit]
@@ -332,10 +356,12 @@ PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
+
 EOF
     systemctl daemon-reload
 }
-houduan(){
+
+back_end(){
 wget -N https://raw.githubusercontent.com/BobCoderS9/XrayR-release/master/install.sh && bash install.sh
 rm -rf /etc/XrayR/config.yml
     cat >/etc/XrayR/config.yml <<EOF
@@ -354,11 +380,11 @@ ConnetionConfig:
   BufferSize: 64 # The internal cache size of each connection, kB 
 Nodes:
   -
-    PanelType: "${panel}" # Panel type: SSpanel, V2board, PMpanel, , Proxypanel
+    PanelType: "${planetype}" # Panel type: SSpanel, V2board, PMpanel, , Proxypanel
     ApiConfig:
-      ApiHost: "${host}"
-      ApiKey: "${key}"
-      NodeID: ${id}
+      ApiHost: "${apidomin}"
+      ApiKey: "${apikey}"
+      NodeID: ${nodeid}
       NodeType: V2ray # Node type: V2ray, Shadowsocks, Trojan, Shadowsocks-Plugin
       Timeout: 30 # Timeout for the api request
       EnableVless: false # Enable Vless for V2ray Type
@@ -395,22 +421,25 @@ Nodes:
 EOF
 
     systemctl restart XrayR
+	systemctl restart nginx
 }
-xrayr() {
+
+xrayr(){
     is_root
-    check_system
-    chrony_install
-    dependency_install
-    basic_optimization
-    nginx_exist_check
-    nginx_conf_add
-    web_camouflage
-    nginx_systemd
-    ssl_install
-    acme
-    start_process_systemd
-    enable_process_systemd
-    acme_cron_update
-	  houduan
+	basic_information
+	check_system
+	chrony_install
+	dependency_install
+	basic_optimization
+	port_exist_check
+	nginx_exist_check
+	nginx_conf_add
+	web_camouflage
+	ssl_install
+	acme
+	acme_cron_update
+	nginx_systemd
+	back_end
 }
+
 xrayr
